@@ -1,0 +1,69 @@
+name: Build Docker Kernel
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ shockwave-docker ]
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential ccache curl flex \
+            libssl-dev zip zlib1g-dev libncurses-dev python3 \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+
+      - name: Download Neutron Clang
+        run: |
+          mkdir -p /opt/clang
+          cd /opt/clang
+          curl -LSs "https://github.com/ZyCromerZ/Clang/releases/download/21.0.0git-20250425-release/Clang-21.0.0git-20250425.tar.gz" -o clang.tar.gz
+          tar -xzf clang.tar.gz
+          rm clang.tar.gz
+          echo "/opt/clang/bin" >> $GITHUB_PATH
+
+      - name: Build kernel
+        run: |
+          export ARCH=arm64
+          export PATH="/opt/clang/bin:$PATH"
+          make ARCH=arm64 CC=clang LD=ld.lld \
+            AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy \
+            STRIP=llvm-strip OBJDUMP=llvm-objdump READELF=llvm-readelf \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            LLVM=1 LLVM_IAS=1 -j$(nproc) \
+            merlin_defconfig
+
+          make ARCH=arm64 CC=clang LD=ld.lld \
+            AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy \
+            STRIP=llvm-strip OBJDUMP=llvm-objdump READELF=llvm-readelf \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            LLVM=1 LLVM_IAS=1 \
+            CONFIG_NO_ERROR_ON_MISMATCH=y \
+            CONFIG_THINLTO=n \
+            -j$(nproc) 2>&1
+
+      - name: Package AnyKernel3
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3
+          cp arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          cp arch/arm64/boot/dts/mediatek/*.dtbo AnyKernel3/ 2>/dev/null || true
+          cd AnyKernel3
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+          sed -i 's!BLOCK=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;!BLOCK=auto;!g' anykernel.sh
+          sed -i 's/IS_SLOT_DEVICE=0;/is_slot_device=auto;/g' anykernel.sh
+          zip -r9 ../ShockwaveKernel-Docker.zip * -x .git README.md *placeholder
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ShockwaveKernel-Docker
+          path: ShockwaveKernel-Docker.zip
